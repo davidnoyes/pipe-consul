@@ -47,27 +47,27 @@ const (
 	defaultWeight   = 0
 )
 
-type zknsResolver struct {
-	zconn      zk.Conn
+type consulResolver struct {
+	//cConn      zk.Conn
 	fqdn       string // The fqdn of this machine.
-	zknsDomain string // The chunk of naming hierarchy to serve.
-	zkRoot     string // The root path from which to resolve.
+	domain     string // The chunk of naming hierarchy to serve.
+	consulRoot string // The root path from which to resolve.
 }
 
-func newZknsResolver(zconn zk.Conn, fqdn, zknsDomain, zkRoot string) *zknsResolver {
+func newConsulResolver(fqdn, zknsDomain, zkRoot string) *zknsResolver {
 	if fqdn[len(fqdn)-1] == '.' {
 		fqdn = fqdn[:len(fqdn)-1]
 	}
 	if zknsDomain[len(zknsDomain)-1] == '.' {
-		zknsDomain = zknsDomain[:len(zknsDomain)-1]
+		zknsDomain = domain[:len(domain)-1]
 	}
-	if zknsDomain[0] != '.' {
-		zknsDomain = "." + zknsDomain
+	if domain[0] != '.' {
+		domain = "." + domain
 	}
-	return &zknsResolver{zconn, fqdn, zknsDomain, zkRoot}
+	return &consulResolver{fqdn, zknsDomain, zkRoot}
 }
 
-func (rz *zknsResolver) getResult(qtype, qname string) ([]*pdnsReply, error) {
+func (rc *consulResolver) getResult(qtype, qname string) ([]*pdnsReply, error) {
 	if !strings.HasSuffix(qname, rz.zknsDomain) {
 		return nil, fmt.Errorf("invalid domain for query: %v", qname)
 	}
@@ -99,7 +99,7 @@ func reverse(p []string) []string {
 	return p
 }
 
-func (rz *zknsResolver) getSRV(qname string) ([]*pdnsReply, error) {
+func (rc *consulResolver) getSRV(qname string) ([]*pdnsReply, error) {
 	if !strings.HasSuffix(qname, rz.zknsDomain) {
 		return nil, fmt.Errorf("invalid domain for query: %v", qname)
 	}
@@ -130,7 +130,7 @@ func (rz *zknsResolver) getSRV(qname string) ([]*pdnsReply, error) {
 
 // An CNAME record is generated when there is only one ZknsAddr, it
 // has no port component.
-func (rz *zknsResolver) getCNAME(qname string) ([]*pdnsReply, error) {
+func (rc *consulResolver) getCNAME(qname string) ([]*pdnsReply, error) {
 	if !strings.HasSuffix(qname, rz.zknsDomain) {
 		return nil, fmt.Errorf("invalid domain for query: %v", qname)
 	}
@@ -158,7 +158,7 @@ func (rz *zknsResolver) getCNAME(qname string) ([]*pdnsReply, error) {
 
 // An A record is generated when there is only one ZknsAddr, it
 // has no port component and provides an IPv4 address.
-func (rz *zknsResolver) getA(qname string) ([]*pdnsReply, error) {
+func (rc *consulResolver) getA(qname string) ([]*pdnsReply, error) {
 	if !strings.HasSuffix(qname, rz.zknsDomain) {
 		return nil, fmt.Errorf("invalid domain for query: %v", qname)
 	}
@@ -185,7 +185,7 @@ func (rz *zknsResolver) getA(qname string) ([]*pdnsReply, error) {
 }
 
 type pdns struct {
-	zr *zknsResolver
+	consul *consulResolver
 }
 
 type pdnsReq struct {
@@ -272,7 +272,7 @@ var (
 )
 
 func (pd *pdns) Serve(r io.Reader, w io.Writer) {
-	log.Infof("starting zkns resolver")
+	log.Infof("starting consul resolver")
 	bufr := bufio.NewReader(r)
 	needHandshake := true
 	for {
@@ -328,9 +328,9 @@ func (pd *pdns) Serve(r io.Reader, w io.Writer) {
 }
 
 func main() {
-	zknsDomain := flag.String("zkns-domain", "", "The naming hierarchy portion to serve")
-	zknsRoot := flag.String("zkns-root", "", "The root path from which to resolve")
-	bindAddr := flag.String("bind-addr", ":31981", "Bind the debug http server")
+	//domain := flag.String("domain", "", "The naming hierarchy portion to serve")
+	//consulRoot := flag.String("root", "", "The root path from which to resolve")
+	bindAddr := flag.String("bind-addr", ":81", "Bind the debug http server")
 	flag.Parse()
 
 	if *bindAddr != "" {
@@ -342,9 +342,9 @@ func main() {
 		}()
 	}
 
-	zconn := zk.NewMetaConn(false)
+	//zconn := zk.NewMetaConn(false)
 	fqdn := netutil.FullyQualifiedHostnameOrPanic()
-	zr1 := newZknsResolver(zconn, fqdn, *zknsDomain, *zknsRoot)
+	//zr1 := newZknsResolver(zconn, fqdn, *zknsDomain, *zknsRoot)
 	pd := &pdns{zr1}
 	pd.Serve(os.Stdin, os.Stdout)
 	os.Stdout.Close()

@@ -1,195 +1,32 @@
 package main
 
-// To be used with PowerDNS (pdns) as a "pipe backend" CoProcess.
-//
-// Protocol description:
-// http://downloads.powerdns.com/documentation/html/backends-detail.html#PIPEBACKEND.
-//
-
 import (
 	"bufio"
 	"bytes"
 	"errors"
-	"expvar"
 	"flag"
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path"
-	"strings"
-
 	log "github.com/golang/glog"
+	"io"
+	"os"
+)
+
+const (
+	END_REPLY      = "END\n"
+	FAIL_REPLY     = "FAIL\n"
+	GREETING_REPLY = "OK\tpipe-consul\n"
+	TAG_AXFR       = "AXFR" // ignored for now
+	TAG_PING       = "PING"
+	TAG_Q          = "Q"
 )
 
 var (
 	GREETING_ABI_V2 = []byte("HELO\t2")
-	GREETING_REPLY  = "OK\tzkns2pdns\n"
-	END_REPLY       = "END\n"
-	FAIL_REPLY      = "FAIL\n"
+	errLongLine     = errors.New("pdns line too long")
+	errBadLine      = errors.New("pdns line unparseable")
 )
 
-var (
-	errLongLine = errors.New("pdns line too long")
-	errBadLine  = errors.New("pdns line unparseable")
-)
-
-const (
-	KIND_AXFR = "AXFR" // ignored for now
-	KIND_Q    = "Q"
-	KIND_PING = "PING"
-)
-
-const (
-	defaultTTL      = "1"
-	defaultId       = "1"
-	defaultPriority = 0
-	defaultWeight   = 0
-)
-
-type consulResolver struct {
-	//cConn      zk.Conn
-	fqdn       string // The fqdn of this machine.
-	domain     string // The chunk of naming hierarchy to serve.
-	consulRoot string // The root path from which to resolve.
-}
-
-func newConsulResolver(fqdn, zknsDomain, zkRoot string) *zknsResolver {
-	if fqdn[len(fqdn)-1] == '.' {
-		fqdn = fqdn[:len(fqdn)-1]
-	}
-	if zknsDomain[len(zknsDomain)-1] == '.' {
-		zknsDomain = domain[:len(domain)-1]
-	}
-	if domain[0] != '.' {
-		domain = "." + domain
-	}
-	return &consulResolver{fqdn, zknsDomain, zkRoot}
-}
-
-func (rc *consulResolver) getResult(qtype, qname string) ([]*pdnsReply, error) {
-	if !strings.HasSuffix(qname, rz.zknsDomain) {
-		return nil, fmt.Errorf("invalid domain for query: %v", qname)
-	}
-
-	switch qtype {
-	case "SOA":
-		// primary hostmaster serial refresh retry expire default_ttl
-		content := fmt.Sprintf("%v hostmaster@%v 0 1800 600 3600 300", rz.fqdn, rz.fqdn)
-		return []*pdnsReply{&pdnsReply{qname, "IN", qtype, defaultTTL, defaultId, content}}, nil
-	case "SRV":
-		return rz.getSRV(qname)
-	case "CNAME":
-		return rz.getCNAME(qname)
-	case "A":
-		return rz.getA(qname)
-	}
-	return nil, nil
-}
-
-// Reverse a slice in place. Return the same slice for convenience.
-func reverse(p []string) []string {
-	i := 0
-	j := len(p) - 1
-	for i < j {
-		p[i], p[j] = p[j], p[i]
-		i++
-		j = len(p) - i - 1
-	}
-	return p
-}
-
-func (rc *consulResolver) getSRV(qname string) ([]*pdnsReply, error) {
-	if !strings.HasSuffix(qname, rz.zknsDomain) {
-		return nil, fmt.Errorf("invalid domain for query: %v", qname)
-	}
-	zkname := qname[:len(qname)-len(rz.zknsDomain)]
-	nameParts := strings.Split(zkname, ".")
-	portName := nameParts[0]
-	if portName[0] != '_' {
-		// Since PDNS probes for all types, this isn't really an error worth mentioning.
-		// fmt.Errorf("invalid port name for query: %v", portName)
-		log.V(6).Infof("skipping SRV query: %v", qname)
-		return nil, nil
-	}
-	nameParts = reverse(nameParts[1:])
-
-	zkPath := path.Join(rz.zkRoot, path.Join(nameParts...))
-	addrs, err := zkns.ReadAddrs(rz.zconn, zkPath)
-	if err != nil {
-		return nil, err
-	}
-
-	replies := make([]*pdnsReply, 0, 16)
-	for _, addr := range addrs.Entries {
-		content := fmt.Sprintf("%v\t%v %v %v", defaultPriority, defaultWeight, addr.NamedPortMap[portName], addr.Host)
-		replies = append(replies, &pdnsReply{qname, "IN", "SRV", defaultTTL, defaultId, content})
-	}
-	return replies, nil
-}
-
-// An CNAME record is generated when there is only one ZknsAddr, it
-// has no port component.
-func (rc *consulResolver) getCNAME(qname string) ([]*pdnsReply, error) {
-	if !strings.HasSuffix(qname, rz.zknsDomain) {
-		return nil, fmt.Errorf("invalid domain for query: %v", qname)
-	}
-	if qname[0] == '_' {
-		// Since PDNS probes for all types, use some heuristics to limit error noise.
-		log.V(6).Infof("skipping CNAME query: %v", qname)
-		return nil, nil
-	}
-	zkname := qname[:len(qname)-len(rz.zknsDomain)]
-	nameParts := reverse(strings.Split(zkname, "."))
-	zkPath := path.Join(rz.zkRoot, path.Join(nameParts...))
-	addrs, err := zkns.ReadAddrs(rz.zconn, zkPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(addrs.Entries) != 1 {
-		// Since PDNS probes for all types, this isn't really an error worth mentioning.
-		// return nil, fmt.Errorf("invalid response for CNAME query: %v", qname)
-		return nil, nil
-	}
-
-	return []*pdnsReply{&pdnsReply{qname, "IN", "CNAME", defaultTTL, defaultId, addrs.Entries[0].Host}}, nil
-}
-
-// An A record is generated when there is only one ZknsAddr, it
-// has no port component and provides an IPv4 address.
-func (rc *consulResolver) getA(qname string) ([]*pdnsReply, error) {
-	if !strings.HasSuffix(qname, rz.zknsDomain) {
-		return nil, fmt.Errorf("invalid domain for query: %v", qname)
-	}
-	if qname[0] == '_' {
-		// Since PDNS probes for all types, use some heuristics to limit error noise.
-		log.V(6).Infof("skipping A query: %v", qname)
-		return nil, nil
-	}
-	zkname := qname[:len(qname)-len(rz.zknsDomain)]
-	nameParts := reverse(strings.Split(zkname, "."))
-	zkPath := path.Join(rz.zkRoot, path.Join(nameParts...))
-	addrs, err := zkns.ReadAddrs(rz.zconn, zkPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(addrs.Entries) != 1 || addrs.Entries[0].IPv4 == "" {
-		// Since PDNS probes for all types, this isn't really an error worth mentioning.
-		// return nil, fmt.Errorf("invalid response for CNAME query: %v", qname)
-		return nil, nil
-	}
-
-	return []*pdnsReply{&pdnsReply{qname, "IN", "A", defaultTTL, defaultId, addrs.Entries[0].IPv4}}, nil
-}
-
-type pdns struct {
-	consul *consulResolver
-}
-
-type pdnsReq struct {
-	kind     string
+type question struct {
+	tag      string
 	qname    string
 	qclass   string // always "IN"
 	qtype    string // almost always "ANY"
@@ -198,99 +35,55 @@ type pdnsReq struct {
 	localIp  string
 }
 
-type pdnsReply struct {
-	qname   string
-	qclass  string
-	qtype   string
-	ttl     string
-	id      string
-	content string // may be other tab-separated data based on SRV/MX records
-}
-
-func (pr *pdnsReply) fmtReply() string {
-	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\n", pr.qname, pr.qclass, pr.qtype, pr.ttl, pr.id, pr.content)
-}
-
-func parseReq(line []byte) (*pdnsReq, error) {
-	tokens := bytes.Split(line, []byte("\t"))
-	kind := string(tokens[0])
-	switch kind {
-	case KIND_Q:
-		if len(tokens) < 7 {
+func parseQuestion(line []byte) (*question, error) {
+	fields := bytes.Split(line, []byte("\t"))
+	tag := string(fields[0])
+	switch tag {
+	case TAG_Q:
+		if len(fields) < 7 {
 			return nil, errBadLine
 		}
-		return &pdnsReq{kind, string(tokens[1]), string(tokens[2]), string(tokens[3]), string(tokens[4]), string(tokens[5]), string(tokens[6])}, nil
-	case KIND_PING, KIND_AXFR:
-		return &pdnsReq{kind: kind}, nil
+		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5]), localIp: string(fields[6])}, nil
+
+	case TAG_AXFR:
+		if len(fields) < 3 {
+			return nil, errBadLine
+		}
+		return &question{tag: tag, id: string(fields[1])}, nil
+
+	case TAG_PING:
+		return &question{tag: tag}, nil
+
 	default:
 		return nil, errBadLine
 	}
-	panic("unreachable")
-}
-
-// PDNS will query for "ANY" no matter what record type the client
-// has asked for. Thus, we need to return data for all record
-// types. PDNS will then filter for what the client needs.  PDNS is
-// sensitive to the order in which records are returned.  If you
-// return a CNAME first, it returns the CNAME for all queries.
-// The DNS spec says you should not have conflicts between
-// CNAME/SRV records, so this really shouldn't be an issue.
-func (pd *pdns) handleQReq(req *pdnsReq) (lines []string, err error) {
-	qtypes := []string{"SRV", "A", "SOA", "CNAME"}
-	if req.qtype != "ANY" {
-		qtypes = []string{req.qtype}
-	}
-	lines = make([]string, 0, 16)
-	for _, qtype := range qtypes {
-		replies, err := pd.zr.getResult(qtype, req.qname)
-		if err != nil {
-			log.Errorf("query failed %v %v: %v", qtype, req.qname, err)
-			continue
-		}
-		for _, reply := range replies {
-			lines = append(lines, reply.fmtReply())
-		}
-	}
-	if len(lines) == 0 {
-		emptyCount.Add(1)
-		log.Warningf("no results for %v %v", req.qtype, req.qname)
-	}
-	return lines, nil
+	panic("Unreachable parse")
 }
 
 func write(w io.Writer, line string) {
 	_, err := io.WriteString(w, line)
 	if err != nil {
-		log.Errorf("write failed: %v", err)
+		log.Errorf("Write failed: %v", err)
 	}
 }
 
-var (
-	requestCount = expvar.NewInt("pdns-request-count")
-	errorCount   = expvar.NewInt("pdns-error-count")
-	emptyCount   = expvar.NewInt("pdns-empty-count")
-)
-
-func (pd *pdns) Serve(r io.Reader, w io.Writer) {
-	log.Infof("starting consul resolver")
-	bufr := bufio.NewReader(r)
+func Process(r io.Reader, w io.Writer) {
+	log.Info("Starting Consul Resolver")
+	buffer := bufio.NewReader(r)
 	needHandshake := true
 	for {
-		line, isPrefix, err := bufr.ReadLine()
+		line, isPrefix, err := buffer.ReadLine()
 		if err == nil && isPrefix {
 			err = errLongLine
-		}
-		if err == io.EOF {
+		} else if err == io.EOF {
 			return
-		}
-		if err != nil {
-			log.Errorf("failed reading request: %v", err)
-			continue
+		} else if err != nil {
+			log.Errorf("Failed reading question: %v", err)
 		}
 
 		if needHandshake {
 			if !bytes.Equal(line, GREETING_ABI_V2) {
-				log.Errorf("handshake failed: %v != %v", line, GREETING_ABI_V2)
+				log.Errorf("Handshake failed: %v != %v", line, GREETING_ABI_V2)
 				write(w, FAIL_REPLY)
 			} else {
 				needHandshake = false
@@ -299,53 +92,23 @@ func (pd *pdns) Serve(r io.Reader, w io.Writer) {
 			continue
 		}
 
-		requestCount.Add(1)
-		req, err := parseReq(line)
+		question, err := parseQuestion(line)
 		if err != nil {
-			errorCount.Add(1)
-			log.Errorf("failed parsing request: %v", err)
+			log.Errorf("Failed to process question: %v", err)
 			write(w, FAIL_REPLY)
 			continue
 		}
 
-		switch req.kind {
-		case KIND_Q:
-			respLines, err := pd.handleQReq(req)
-			if err != nil {
-				errorCount.Add(1)
-				log.Errorf("failed query: %v %v", req.qname, err)
-				write(w, FAIL_REPLY)
-				continue
-			}
-			for _, line := range respLines {
-				write(w, line)
-			}
-		case KIND_AXFR:
-			// FIXME(mike) unimplemented
+		switch question.tag {
+		case TAG_Q:
+		case TAG_AXFR:
+		case TAG_PING:
 		}
-		write(w, END_REPLY)
 	}
 }
 
 func main() {
-	//domain := flag.String("domain", "", "The naming hierarchy portion to serve")
-	//consulRoot := flag.String("root", "", "The root path from which to resolve")
-	bindAddr := flag.String("bind-addr", ":81", "Bind the debug http server")
 	flag.Parse()
-
-	if *bindAddr != "" {
-		go func() {
-			err := http.ListenAndServe(*bindAddr, nil)
-			if err != nil {
-				log.Fatalf("ListenAndServe: ", err)
-			}
-		}()
-	}
-
-	//zconn := zk.NewMetaConn(false)
-	fqdn := netutil.FullyQualifiedHostnameOrPanic()
-	//zr1 := newZknsResolver(zconn, fqdn, *zknsDomain, *zknsRoot)
-	pd := &pdns{zr1}
-	pd.Serve(os.Stdin, os.Stdout)
+	Process(os.Stdin, os.Stdout)
 	os.Stdout.Close()
 }

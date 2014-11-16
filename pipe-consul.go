@@ -35,6 +35,14 @@ type question struct {
 	localIp  string
 }
 
+func answerQuestion(question *question) (answers []string, err error) {
+	if question.tag == "ANY" {
+		return nil, nil
+	} else {
+
+	}
+}
+
 func parseQuestion(line []byte) (*question, error) {
 	fields := bytes.Split(line, []byte("\t"))
 	tag := string(fields[0])
@@ -99,11 +107,19 @@ func Process(r io.Reader, w io.Writer) {
 			continue
 		}
 
+		log.Info(question)
 		switch question.tag {
 		case TAG_Q:
+			responseLines, err := answerQuestion(question)
+			if err != nil {
+				log.Errorf("Failed to answer question: %v %v", question.qname, err)
+				write(w, FAIL_REPLY)
+				continue
+			}
 		case TAG_AXFR:
 		case TAG_PING:
 		}
+		write(w, END_REPLY)
 	}
 }
 

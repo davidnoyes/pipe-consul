@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
 	log "github.com/golang/glog"
 	"io"
 	"os"
@@ -34,14 +35,39 @@ type question struct {
 	qtype    string // almost always "ANY"
 	id       string
 	remoteIp string
-	localIp  string
 }
 
-func answerQuestion(question *question) (lines []string, err error) {
+type result struct {
+	qname   string
+	qclass  string
+	qtype   string
+	ttl     string
+	id      string
+	content string
+}
+
+func (res *result) formatResult() string {
+	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\n", res.qname, res.qclass, res.qtype, res.ttl, res.id, res.content)
+}
+
+func fetchResults(qname, qtype string) ([]*result, error) {
+	return nil, nil
+}
+
+func answerQuestion(question *question) (answers []string, err error) {
 	if question.tag == "ANY" {
 		return nil, nil
 	} else {
-		return nil, nil
+		log.Info(question)
+		results, err := fetchResults(question.qname, question.qtype)
+		if err != nil {
+			log.Errorf("Query error %s %s: %s", question.qname, question.qtype, err)
+			return nil, nil
+		}
+		for _, result := range results {
+			answers = append(answers, result.formatResult())
+		}
+		return answers, nil
 	}
 }
 
@@ -50,10 +76,10 @@ func parseQuestion(line []byte) (*question, error) {
 	tag := string(fields[0])
 	switch tag {
 	case TAG_Q:
-		if len(fields) < 7 {
+		if len(fields) < 6 {
 			return nil, errBadLine
 		}
-		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5]), localIp: string(fields[6])}, nil
+		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5])}, nil
 
 	case TAG_AXFR:
 		return &question{tag: tag}, nil
@@ -106,7 +132,6 @@ func Process(r io.Reader, w io.Writer) {
 			continue
 		}
 
-		log.Info(question)
 		switch question.tag {
 		case TAG_Q:
 			responseLines, err := answerQuestion(question)

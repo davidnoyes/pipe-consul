@@ -20,7 +20,9 @@ const (
 )
 
 var (
+	GREETING_ABI_V1 = []byte("HELO\t1")
 	GREETING_ABI_V2 = []byte("HELO\t2")
+	GREETING_ABI_V3 = []byte("HELO\t3")
 	errLongLine     = errors.New("pdns line too long")
 	errBadLine      = errors.New("pdns line unparseable")
 )
@@ -68,7 +70,7 @@ func parseQuestion(line []byte) (*question, error) {
 func write(w io.Writer, line string) {
 	_, err := io.WriteString(w, line)
 	if err != nil {
-		log.Errorf("Write failed: %v", err)
+		log.Errorf("Write failed: %s", err)
 	}
 }
 
@@ -83,12 +85,12 @@ func Process(r io.Reader, w io.Writer) {
 		} else if err == io.EOF {
 			return
 		} else if err != nil {
-			log.Errorf("Failed reading question: %v", err)
+			log.Errorf("Failed reading question: %s", err)
 		}
 
 		if needHandshake {
-			if !bytes.Equal(line, GREETING_ABI_V2) {
-				log.Errorf("Handshake failed: %v != %v", line, GREETING_ABI_V2)
+			if !bytes.Equal(line, GREETING_ABI_V1) {
+				log.Errorf("Handshake failed: %s != %s", line, GREETING_ABI_V1)
 				write(w, FAIL_REPLY)
 			} else {
 				needHandshake = false
@@ -99,7 +101,7 @@ func Process(r io.Reader, w io.Writer) {
 
 		question, err := parseQuestion(line)
 		if err != nil {
-			log.Errorf("Failed to process question: %v", err)
+			log.Errorf("Failed to process question: %s", err)
 			write(w, FAIL_REPLY)
 			continue
 		}
@@ -109,7 +111,7 @@ func Process(r io.Reader, w io.Writer) {
 		case TAG_Q:
 			responseLines, err := answerQuestion(question)
 			if err != nil {
-				log.Errorf("Failed to answer question: %v %v", question.qname, err)
+				log.Errorf("Failed to answer question: %s %s", question.qname, err)
 				write(w, FAIL_REPLY)
 				continue
 			}

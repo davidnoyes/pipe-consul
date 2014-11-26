@@ -35,11 +35,11 @@ type question struct {
 	localIp  string
 }
 
-func answerQuestion(question *question) (answers []string, err error) {
+func answerQuestion(question *question) (lines []string, err error) {
 	if question.tag == "ANY" {
 		return nil, nil
 	} else {
-
+		return nil, nil
 	}
 }
 
@@ -54,10 +54,7 @@ func parseQuestion(line []byte) (*question, error) {
 		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5]), localIp: string(fields[6])}, nil
 
 	case TAG_AXFR:
-		if len(fields) < 3 {
-			return nil, errBadLine
-		}
-		return &question{tag: tag, id: string(fields[1])}, nil
+		return &question{tag: tag}, nil
 
 	case TAG_PING:
 		return &question{tag: tag}, nil
@@ -116,8 +113,13 @@ func Process(r io.Reader, w io.Writer) {
 				write(w, FAIL_REPLY)
 				continue
 			}
+			for _, line := range responseLines {
+				write(w, line)
+			}
 		case TAG_AXFR:
+			//TODO: Implement if required
 		case TAG_PING:
+			//TODO: Implement if required
 		}
 		write(w, END_REPLY)
 	}

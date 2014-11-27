@@ -12,12 +12,16 @@ import (
 )
 
 const (
-	END_REPLY      = "END\n"
-	FAIL_REPLY     = "FAIL\n"
-	GREETING_REPLY = "OK\tpipe-consul\n"
-	TAG_AXFR       = "AXFR" // ignored for now
-	TAG_PING       = "PING"
-	TAG_Q          = "Q"
+	END_REPLY       = "END\n"
+	FAIL_REPLY      = "FAIL\n"
+	GREETING_REPLY  = "OK\tpipe-consul\n"
+	TAG_AXFR        = "AXFR" // ignored for now
+	TAG_PING        = "PING"
+	TAG_Q           = "Q"
+	defaultTTL      = "1"
+	defaultId       = "1"
+	defaultPriority = 0
+	defaultWeight   = 0
 )
 
 var (
@@ -37,6 +41,15 @@ type question struct {
 	remoteIp string
 }
 
+type consulResolver struct {
+	authDomain string
+	consulConn string
+}
+
+type pdns struct {
+	cr *consulResolver
+}
+
 type result struct {
 	qname   string
 	qclass  string
@@ -46,20 +59,44 @@ type result struct {
 	content string
 }
 
+func newConsulResolver(authDomain, consulConn string) (*consulResolver, error) {
+	if authDomain == "" || consulConn == "" {
+		return nil, errors.New("Invalid parameters")
+	}
+	if authDomain[len(authDomain)-1] == '.' {
+		authDomain = authDomain[:len(authDomain)-1]
+	}
+	if authDomain[0] != '.' {
+		authDomain = "." + authDomain
+	}
+	return &consulResolver{authDomain, consulConn}, nil
+}
+
 func (res *result) formatResult() string {
 	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\n", res.qname, res.qclass, res.qtype, res.ttl, res.id, res.content)
 }
 
-func fetchResults(qname, qtype string) ([]*result, error) {
+func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
+	switch qtype {
+	case "ANY":
+		return nil, nil
+	case "SOA":
+		content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", cr.authDomain, cr.authDomain)
+		return []*result{&result{qname, "IN", qtype, defaultTTL, defaultId, content}}, nil
+	case "CNAME":
+	case "A":
+	case "SRV":
+	case "TXT":
+	}
 	return nil, nil
 }
 
-func answerQuestion(question *question) (answers []string, err error) {
+func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {
 	if question.tag == "ANY" {
 		return nil, nil
 	} else {
 		log.Info(question)
-		results, err := fetchResults(question.qname, question.qtype)
+		results, err := pd.cr.fetchResults(question.qname, question.qtype)
 		if err != nil {
 			log.Errorf("Query error %s %s: %s", question.qname, question.qtype, err)
 			return nil, nil
@@ -71,7 +108,7 @@ func answerQuestion(question *question) (answers []string, err error) {
 	}
 }
 
-func parseQuestion(line []byte) (*question, error) {
+func (pd *pdns) parseQuestion(line []byte) (*question, error) {
 	fields := bytes.Split(line, []byte("\t"))
 	tag := string(fields[0])
 	switch tag {
@@ -94,13 +131,14 @@ func parseQuestion(line []byte) (*question, error) {
 }
 
 func write(w io.Writer, line string) {
+	log.Infof("OUTPUT: %s", line)
 	_, err := io.WriteString(w, line)
 	if err != nil {
 		log.Errorf("Write failed: %s", err)
 	}
 }
 
-func Process(r io.Reader, w io.Writer) {
+func (pd *pdns) Process(r io.Reader, w io.Writer) {
 	log.Info("Starting Consul Resolver")
 	buffer := bufio.NewReader(r)
 	needHandshake := true
@@ -125,7 +163,7 @@ func Process(r io.Reader, w io.Writer) {
 			continue
 		}
 
-		question, err := parseQuestion(line)
+		question, err := pd.parseQuestion(line)
 		if err != nil {
 			log.Errorf("Failed to process question: %s", err)
 			write(w, FAIL_REPLY)
@@ -134,7 +172,7 @@ func Process(r io.Reader, w io.Writer) {
 
 		switch question.tag {
 		case TAG_Q:
-			responseLines, err := answerQuestion(question)
+			responseLines, err := pd.answerQuestion(question)
 			if err != nil {
 				log.Errorf("Failed to answer question: %s %s", question.qname, err)
 				write(w, FAIL_REPLY)
@@ -153,7 +191,15 @@ func Process(r io.Reader, w io.Writer) {
 }
 
 func main() {
+	authDomain := flag.String("auth-domain", "", "The name of the authorititive domain being served")
+	consulConn := flag.String("consul-conn", "", "The URL to the Consul service")
 	flag.Parse()
-	Process(os.Stdin, os.Stdout)
+	cRes, err := newConsulResolver(*authDomain, *consulConn)
+	if err != nil {
+		log.Errorf("%s", err)
+		os.Exit(1)
+	}
+	pd := &pdns{cRes}
+	pd.Process(os.Stdin, os.Stdout)
 	os.Stdout.Close()
 }

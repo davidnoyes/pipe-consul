@@ -9,25 +9,29 @@ import (
 	log "github.com/golang/glog"
 	"io"
 	"os"
+	"strings"
 )
 
 const (
-	END_REPLY       = "END\n"
-	FAIL_REPLY      = "FAIL\n"
-	GREETING_REPLY  = "OK\tpipe-consul\n"
-	TAG_AXFR        = "AXFR" // ignored for now
-	TAG_PING        = "PING"
-	TAG_Q           = "Q"
-	defaultTTL      = "1"
-	defaultId       = "1"
-	defaultPriority = 0
-	defaultWeight   = 0
+	END_REPLY        = "END\n"
+	FAIL_REPLY       = "FAIL\n"
+	GREETING_REPLY   = "OK\tpipe-consul\n"
+	TAG_AXFR         = "AXFR" // ignored for now
+	TAG_PING         = "PING"
+	TAG_Q            = "Q"
+	defaultScopebits = "0"
+	defaultAuth      = "1"
+	defaultTTL       = "1"
+	defaultId        = "2"
+	defaultPriority  = 0
+	defaultWeight    = 0
 )
 
 var (
 	GREETING_ABI_V1 = []byte("HELO\t1")
 	GREETING_ABI_V2 = []byte("HELO\t2")
 	GREETING_ABI_V3 = []byte("HELO\t3")
+	GREETING_ABI_V4 = []byte("HELO\t4")
 	errLongLine     = errors.New("pdns line too long")
 	errBadLine      = errors.New("pdns line unparseable")
 )
@@ -39,6 +43,8 @@ type question struct {
 	qtype    string // almost always "ANY"
 	id       string
 	remoteIp string
+	localIp  string
+	subnet   string
 }
 
 type consulResolver struct {
@@ -51,12 +57,14 @@ type pdns struct {
 }
 
 type result struct {
-	qname   string
-	qclass  string
-	qtype   string
-	ttl     string
-	id      string
-	content string
+	scopebits string
+	auth      string
+	qname     string
+	qclass    string
+	qtype     string
+	ttl       string
+	id        string
+	content   string
 }
 
 func newConsulResolver(authDomain, consulConn string) (*consulResolver, error) {
@@ -66,46 +74,47 @@ func newConsulResolver(authDomain, consulConn string) (*consulResolver, error) {
 	if authDomain[len(authDomain)-1] == '.' {
 		authDomain = authDomain[:len(authDomain)-1]
 	}
-	if authDomain[0] != '.' {
-		authDomain = "." + authDomain
+	if authDomain[0] == '.' {
+		authDomain = authDomain[1 : len(authDomain)-1]
 	}
+	// if authDomain[0] != '.' {
+	// 	authDomain = "." + authDomain
+	// }
 	return &consulResolver{authDomain, consulConn}, nil
 }
 
 func (res *result) formatResult() string {
-	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\n", res.qname, res.qclass, res.qtype, res.ttl, res.id, res.content)
+	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\n", res.scopebits, res.auth, res.qname, res.qclass, res.qtype, res.ttl, res.id, res.content)
 }
 
 func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	switch qtype {
 	case "ANY":
-		return nil, nil
+		return nil, errors.New("Not supported")
 	case "SOA":
+		if !strings.HasSuffix(qname, cr.authDomain) {
+			return nil, errors.New(fmt.Sprintf("invalid domain for query: %s", qname))
+		}
 		content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", cr.authDomain, cr.authDomain)
-		return []*result{&result{qname, "IN", qtype, defaultTTL, defaultId, content}}, nil
+		return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, defaultId, content}}, nil
 	case "CNAME":
 	case "A":
 	case "SRV":
 	case "TXT":
 	}
-	return nil, nil
+	return nil, errors.New(fmt.Sprintf("Type: %s not supported", qtype))
 }
 
 func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {
-	if question.tag == "ANY" {
-		return nil, nil
-	} else {
-		log.Info(question)
-		results, err := pd.cr.fetchResults(question.qname, question.qtype)
-		if err != nil {
-			log.Errorf("Query error %s %s: %s", question.qname, question.qtype, err)
-			return nil, nil
-		}
-		for _, result := range results {
-			answers = append(answers, result.formatResult())
-		}
-		return answers, nil
+	results, err := pd.cr.fetchResults(question.qname, question.qtype)
+	if err != nil {
+		log.Errorf("Query error %s %s: %s", question.qname, question.qtype, err)
+		return nil, err
 	}
+	for _, result := range results {
+		answers = append(answers, result.formatResult())
+	}
+	return answers, nil
 }
 
 func (pd *pdns) parseQuestion(line []byte) (*question, error) {
@@ -113,10 +122,10 @@ func (pd *pdns) parseQuestion(line []byte) (*question, error) {
 	tag := string(fields[0])
 	switch tag {
 	case TAG_Q:
-		if len(fields) < 6 {
+		if len(fields) < 8 {
 			return nil, errBadLine
 		}
-		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5])}, nil
+		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5]), localIp: string(fields[6]), subnet: string(fields[7])}, nil
 
 	case TAG_AXFR:
 		return &question{tag: tag}, nil
@@ -152,9 +161,10 @@ func (pd *pdns) Process(r io.Reader, w io.Writer) {
 			log.Errorf("Failed reading question: %s", err)
 		}
 
+		log.Infof("INPUT: %s", line)
 		if needHandshake {
-			if !bytes.Equal(line, GREETING_ABI_V1) {
-				log.Errorf("Handshake failed: %s != %s", line, GREETING_ABI_V1)
+			if !bytes.Equal(line, GREETING_ABI_V4) {
+				log.Errorf("Handshake failed: %s != %s", line, GREETING_ABI_V4)
 				write(w, FAIL_REPLY)
 			} else {
 				needHandshake = false

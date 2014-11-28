@@ -9,7 +9,7 @@ import (
 	log "github.com/golang/glog"
 	"io"
 	"os"
-	"strings"
+	//"strings"
 )
 
 const (
@@ -75,7 +75,7 @@ func newConsulResolver(authDomain, consulConn string) (*consulResolver, error) {
 		authDomain = authDomain[:len(authDomain)-1]
 	}
 	if authDomain[0] == '.' {
-		authDomain = authDomain[1 : len(authDomain)-1]
+		authDomain = authDomain[1:len(authDomain)]
 	}
 	// if authDomain[0] != '.' {
 	// 	authDomain = "." + authDomain
@@ -92,11 +92,12 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	case "ANY":
 		return nil, errors.New("Not supported")
 	case "SOA":
-		if !strings.HasSuffix(qname, cr.authDomain) {
-			return nil, errors.New(fmt.Sprintf("invalid domain for query: %s", qname))
+		log.Infof("%s, %s", qname, cr.authDomain)
+		if qname == cr.authDomain {
+			content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", cr.authDomain, cr.authDomain)
+			return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, defaultId, content}}, nil
 		}
-		content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", cr.authDomain, cr.authDomain)
-		return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, defaultId, content}}, nil
+		return nil, nil
 	case "CNAME":
 	case "A":
 	case "SRV":

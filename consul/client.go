@@ -27,9 +27,7 @@ func NewConsulClient(address, prefix string) (*Client, error) {
 
 func (client *Client) GetValue(key string) ([]byte, error) {
 	var value []byte
-	log.Infof("search: %s", client.prefix+key)
 	kvPair, _, err := client.kv.Get(client.prefix+key, nil)
-	log.Infof("%s:%s", kvPair.Key, kvPair.Value)
 	if err != nil {
 		return value, err
 	}

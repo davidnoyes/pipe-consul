@@ -93,15 +93,11 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	if qname != "" && qtype != "" {
 		switch qtype {
 		case "ANY":
+			fmt.Println("LOG\tANY MESSAGE!!!!")
 		case "SOA":
-
-			//Do Consul test
-			value, err := cr.consulClient.GetValue(qname + "/")
-			log.Infof("value: %s", value)
-			log.Errorf("error: %v", err)
-			domain := "env.plus.net"
-			if qname == fmt.Sprintf("%s", domain) {
-				content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", qname, qname)
+			domainEnabled, _ := cr.consulClient.GetValue(qname + "/enabled")
+			if bytes.Equal(domainEnabled, []byte("true")) {
+				content := fmt.Sprintf("%s hostmaster.%s 0 1800 600 3600 300", qname, qname)
 				return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, hash(qname), content}}, nil
 			}
 			return nil, nil
@@ -110,7 +106,6 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 		case "SRV":
 		case "TXT":
 		}
-		return nil, errors.New(fmt.Sprintf("Type: %s not supported", qtype))
 	}
 	return nil, nil
 }

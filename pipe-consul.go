@@ -1,6 +1,7 @@
 package main
 
 import (
+	"./consul"
 	"bufio"
 	"bytes"
 	"errors"
@@ -48,8 +49,7 @@ type question struct {
 }
 
 type consulResolver struct {
-	authDomain string
-	consulConn string
+	consulClient *consul.Client
 }
 
 type pdns struct {
@@ -67,17 +67,16 @@ type result struct {
 	content   string
 }
 
-func newConsulResolver(authDomain, consulConn string) (*consulResolver, error) {
-	if authDomain == "" || consulConn == "" {
+func newConsulResolver(environment, address string) (*consulResolver, error) {
+	if address == "" {
 		return nil, errors.New("Invalid parameters")
 	}
-	if authDomain[len(authDomain)-1] == '.' {
-		authDomain = authDomain[:len(authDomain)-1]
+	prefix := "services/dns/" + environment + "/"
+	consulClient, err := consul.NewConsulClient(address, prefix)
+	if err != nil {
+		return nil, err
 	}
-	if authDomain[0] == '.' {
-		authDomain = authDomain[1:len(authDomain)]
-	}
-	return &consulResolver{authDomain, consulConn}, nil
+	return &consulResolver{consulClient}, nil
 }
 
 func (res *result) formatResult() string {
@@ -91,20 +90,29 @@ func hash(s string) string {
 }
 
 func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
-	switch qtype {
-	case "ANY":
-	case "SOA":
-		if qname == cr.authDomain {
-			content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", cr.authDomain, cr.authDomain)
-			return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, hash(qname), content}}, nil
+	if qname != "" && qtype != "" {
+		switch qtype {
+		case "ANY":
+		case "SOA":
+
+			//Do Consul test
+			value, err := cr.consulClient.GetValue(qname + "/")
+			log.Infof("value: %s", value)
+			log.Errorf("error: %v", err)
+			domain := "env.plus.net"
+			if qname == fmt.Sprintf("%s", domain) {
+				content := fmt.Sprintf("%s hostmaster%s 0 1800 600 3600 300", qname, qname)
+				return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, hash(qname), content}}, nil
+			}
+			return nil, nil
+		case "CNAME":
+		case "A":
+		case "SRV":
+		case "TXT":
 		}
-		return nil, nil
-	case "CNAME":
-	case "A":
-	case "SRV":
-	case "TXT":
+		return nil, errors.New(fmt.Sprintf("Type: %s not supported", qtype))
 	}
-	return nil, errors.New(fmt.Sprintf("Type: %s not supported", qtype))
+	return nil, nil
 }
 
 func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {
@@ -203,10 +211,10 @@ func (pd *pdns) Process(r io.Reader, w io.Writer) {
 }
 
 func main() {
-	authDomain := flag.String("auth-domain", "", "The name of the authorititive domain being served")
-	consulConn := flag.String("consul-conn", "", "The URL to the Consul service")
+	environment := flag.String("environment", "", "The name of the environment being served for")
+	consulConn := flag.String("address", "", "The URL to the Consul service")
 	flag.Parse()
-	cRes, err := newConsulResolver(*authDomain, *consulConn)
+	cRes, err := newConsulResolver(*environment, *consulConn)
 	if err != nil {
 		log.Errorf("%s", err)
 		os.Exit(1)

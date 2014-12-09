@@ -38,13 +38,15 @@ func (client *Client) GetValue(key string) ([]byte, error) {
 	return value, nil
 }
 
-func (client *Client) List(key string) {
-	kvPairs, _, err := client.kv.List(client.prefix+key, nil)
-	if err != nil {
-		log.Error(err)
+func (client *Client) GetKeys(domain string) {
+	keys, _, _ := client.kv.Keys(client.prefix+domain+"/NS", "NS/", nil)
+	log.Info(keys)
+	for _, key := range keys {
+		log.Infof("%#v", key)
 	}
-	log.Info(kvPairs)
-	for _, kv := range kvPairs {
-		log.Infof("%s: %s", kv.Key, kv.Value)
-	}
+}
+
+func (client *Client) KeyExists(key string) bool {
+	keys, _, _ := client.kv.Keys(client.prefix+key, "/", nil)
+	return len(keys) > 0
 }

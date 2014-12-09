@@ -54,6 +54,8 @@ type consulResolver struct {
 
 type pdns struct {
 	cr *consulResolver
+	r  io.Reader
+	w  io.Writer
 }
 
 type result struct {
@@ -93,16 +95,17 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	if qname != "" && qtype != "" {
 		switch qtype {
 		case "ANY":
-			fmt.Println("LOG\tANY MESSAGE!!!!")
+		case "AXFR":
+			results := []*result{}
+			results = append(results, cr.fetchSOAResults(qname)...)
+			results = append(results, cr.fetchNSResults(qname)...)
+			return results, nil
 		case "SOA":
-			domainEnabled, _ := cr.consulClient.GetValue(qname + "/enabled")
-			if bytes.Equal(domainEnabled, []byte("true")) {
-				content := fmt.Sprintf("%s hostmaster.%s 0 1800 600 3600 300", qname, qname)
-				return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", qtype, defaultTTL, hash(qname), content}}, nil
-			}
-			return nil, nil
+			return cr.fetchSOAResults(qname), nil
 		case "CNAME":
 		case "A":
+		case "NS":
+			return cr.fetchNSResults(qname), nil
 		case "SRV":
 		case "TXT":
 		}
@@ -110,10 +113,25 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	return nil, nil
 }
 
+func (cr *consulResolver) fetchSOAResults(qname string) []*result {
+	//domainEnabled, _ := cr.consulClient.GetValue(qname + "/enabled")
+	if cr.consulClient.KeyExists(qname) {
+		//if bytes.Equal(domainEnabled, []byte("true")) {
+		content := fmt.Sprintf("%s hostmaster.%s 0 1800 600 3600 300", qname, qname)
+		return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", "SOA", defaultTTL, hash(qname), content}}
+	}
+	return nil
+}
+
+func (cr *consulResolver) fetchNSResults(qname string) []*result {
+	cr.consulClient.GetKeys(qname)
+	return nil
+}
+
 func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {
 	results, err := pd.cr.fetchResults(question.qname, question.qtype)
 	if err != nil {
-		log.Errorf("Query error %s %s: %s", question.qname, question.qtype, err)
+		pd.write(fmt.Sprintf("Query error %s %s: %s", question.qname, question.qtype, err))
 		return nil, err
 	}
 	for _, result := range results {
@@ -133,7 +151,7 @@ func (pd *pdns) parseQuestion(line []byte) (*question, error) {
 		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5]), localIp: string(fields[6]), subnet: string(fields[7])}, nil
 
 	case TAG_AXFR:
-		return &question{tag: tag}, nil
+		return &question{tag: tag, qname: string(fields[2]), qtype: tag}, nil
 
 	case TAG_PING:
 		return &question{tag: tag}, nil
@@ -144,17 +162,18 @@ func (pd *pdns) parseQuestion(line []byte) (*question, error) {
 	panic("Unreachable parse")
 }
 
-func write(w io.Writer, line string) {
-	log.Infof("OUTPUT: %s", line)
-	_, err := io.WriteString(w, line)
-	if err != nil {
-		log.Errorf("Write failed: %s", err)
-	}
+func (pd *pdns) log(line string) {
+	io.WriteString(pd.w, "LOG\t"+line+"\n")
 }
 
-func (pd *pdns) Process(r io.Reader, w io.Writer) {
+func (pd *pdns) write(line string) {
+	log.Info(line)
+	io.WriteString(pd.w, line)
+}
+
+func (pd *pdns) Process() {
 	log.Info("Starting Consul Resolver")
-	buffer := bufio.NewReader(r)
+	buffer := bufio.NewReader(pd.r)
 	needHandshake := true
 	for {
 		line, isPrefix, err := buffer.ReadLine()
@@ -170,10 +189,10 @@ func (pd *pdns) Process(r io.Reader, w io.Writer) {
 		if needHandshake {
 			if !bytes.Equal(line, GREETING_ABI_V4) {
 				log.Errorf("Handshake failed: %s != %s", line, GREETING_ABI_V4)
-				write(w, FAIL_REPLY)
+				pd.write(FAIL_REPLY)
 			} else {
 				needHandshake = false
-				write(w, GREETING_REPLY)
+				pd.write(GREETING_REPLY)
 			}
 			continue
 		}
@@ -181,7 +200,7 @@ func (pd *pdns) Process(r io.Reader, w io.Writer) {
 		question, err := pd.parseQuestion(line)
 		if err != nil {
 			log.Errorf("Failed to process question: %s", err)
-			write(w, FAIL_REPLY)
+			pd.write(FAIL_REPLY)
 			continue
 		}
 
@@ -190,18 +209,26 @@ func (pd *pdns) Process(r io.Reader, w io.Writer) {
 			responseLines, err := pd.answerQuestion(question)
 			if err != nil {
 				log.Errorf("Failed to answer question: %s %s", question.qname, err)
-				write(w, FAIL_REPLY)
+				pd.write(FAIL_REPLY)
 				continue
 			}
 			for _, line := range responseLines {
-				write(w, line)
+				pd.write(line)
 			}
 		case TAG_AXFR:
-			//TODO: Implement if required
+			responseLines, err := pd.answerQuestion(question)
+			if err != nil {
+				log.Errorf("Failed to answer question: %s %s", question.qname, err)
+				pd.write(FAIL_REPLY)
+				continue
+			}
+			for _, line := range responseLines {
+				pd.write(line)
+			}
 		case TAG_PING:
 			//TODO: Implement if required
 		}
-		write(w, END_REPLY)
+		pd.write(END_REPLY)
 	}
 }
 
@@ -211,10 +238,10 @@ func main() {
 	flag.Parse()
 	cRes, err := newConsulResolver(*environment, *consulConn)
 	if err != nil {
-		log.Errorf("%s", err)
+		log.Errorf("FAIL %s", err)
 		os.Exit(1)
 	}
-	pd := &pdns{cRes}
-	pd.Process(os.Stdin, os.Stdout)
+	pd := &pdns{cRes, os.Stdin, os.Stdout}
+	pd.Process()
 	os.Stdout.Close()
 }

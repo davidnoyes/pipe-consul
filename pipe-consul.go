@@ -95,11 +95,9 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	if qname != "" && qtype != "" {
 		switch qtype {
 		case "ANY":
+			return cr.fetchAllResults(qname), nil
 		case "AXFR":
-			results := []*result{}
-			results = append(results, cr.fetchSOAResults(qname)...)
-			results = append(results, cr.fetchNSResults(qname)...)
-			return results, nil
+			return cr.fetchAllResults(qname), nil
 		case "SOA":
 			return cr.fetchSOAResults(qname), nil
 		case "CNAME":
@@ -113,6 +111,13 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	return nil, nil
 }
 
+func (cr *consulResolver) fetchAllResults(qname string) []*result {
+	results := []*result{}
+	results = append(results, cr.fetchSOAResults(qname)...)
+	results = append(results, cr.fetchNSResults(qname)...)
+	return results
+}
+
 func (cr *consulResolver) fetchSOAResults(qname string) []*result {
 	//domainEnabled, _ := cr.consulClient.GetValue(qname + "/enabled")
 	if cr.consulClient.KeyExists(qname) {
@@ -124,8 +129,12 @@ func (cr *consulResolver) fetchSOAResults(qname string) []*result {
 }
 
 func (cr *consulResolver) fetchNSResults(qname string) []*result {
-	cr.consulClient.GetKeys(qname)
-	return nil
+	keys := cr.consulClient.GetChildKeys(qname + "/NS/")
+	results := []*result{}
+	for _, key := range keys {
+		results = append(results, &result{defaultScopebits, defaultAuth, qname, "IN", "NS", defaultTTL, hash(qname), key})
+	}
+	return results
 }
 
 func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {

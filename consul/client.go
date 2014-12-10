@@ -3,7 +3,7 @@ package consul
 import (
 	"errors"
 	"github.com/armon/consul-api"
-	log "github.com/golang/glog"
+	"strings"
 )
 
 type Client struct {
@@ -38,12 +38,22 @@ func (client *Client) GetValue(key string) ([]byte, error) {
 	return value, nil
 }
 
-func (client *Client) GetKeys(domain string) {
-	keys, _, _ := client.kv.Keys(client.prefix+domain+"/NS", "NS/", nil)
-	log.Info(keys)
-	for _, key := range keys {
-		log.Infof("%#v", key)
+func (client *Client) GetKeys(path string) []string {
+	keys, _, _ := client.kv.Keys(client.prefix+path, "/", nil)
+	return keys
+}
+
+func (client *Client) GetChildKeys(path string) []string {
+	keys := client.GetKeys(path)
+	var childKeys []string
+	for i, _ := range keys {
+		keys[i] = strings.TrimPrefix(keys[i], client.prefix+path)
+		keys[i] = strings.TrimSuffix(keys[i], "/")
+		if keys[i] != "" {
+			childKeys = append(childKeys, keys[i])
+		}
 	}
+	return childKeys
 }
 
 func (client *Client) KeyExists(key string) bool {

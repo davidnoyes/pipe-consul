@@ -44,8 +44,6 @@ type question struct {
 	qtype    string // almost always "ANY"
 	id       string
 	remoteIp string
-	localIp  string
-	subnet   string
 }
 
 type consulResolver struct {
@@ -59,14 +57,12 @@ type pdns struct {
 }
 
 type result struct {
-	scopebits string
-	auth      string
-	qname     string
-	qclass    string
-	qtype     string
-	ttl       string
-	id        string
-	content   string
+	qname   string
+	qclass  string
+	qtype   string
+	ttl     string
+	id      string
+	content string
 }
 
 func newConsulResolver(environment, address string) (*consulResolver, error) {
@@ -82,7 +78,7 @@ func newConsulResolver(environment, address string) (*consulResolver, error) {
 }
 
 func (res *result) formatResult() string {
-	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\n", res.scopebits, res.auth, res.qname, res.qclass, res.qtype, res.ttl, res.id, res.content)
+	return fmt.Sprintf("DATA\t%v\t%v\t%v\t%v\t%v\t%v\n", res.qname, res.qclass, res.qtype, res.ttl, res.id, res.content)
 }
 
 func hash(s string) string {
@@ -96,12 +92,11 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 		switch qtype {
 		case "ANY":
 			return cr.fetchAllResults(qname), nil
-		case "AXFR":
-			//return cr.fetchAllResults(qname), nil
 		case "SOA":
 			return cr.fetchSOAResults(qname), nil
 		case "CNAME":
 		case "A":
+			return cr.fetchAResults(qname), nil
 		case "NS":
 			return cr.fetchNSResults(qname), nil
 		case "SRV":
@@ -111,30 +106,35 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	return nil, nil
 }
 
-func (cr *consulResolver) fetchAllResults(qname string) []*result {
-	results := []*result{}
+func (cr *consulResolver) fetchAllResults(qname string) (results []*result) {
 	results = append(results, cr.fetchSOAResults(qname)...)
 	results = append(results, cr.fetchNSResults(qname)...)
-	return results
+	results = append(results, cr.fetchAResults(qname)...)
+	return
 }
 
-func (cr *consulResolver) fetchSOAResults(qname string) []*result {
-	//domainEnabled, _ := cr.consulClient.GetValue(qname + "/enabled")
+func (cr *consulResolver) fetchSOAResults(qname string) (results []*result) {
 	if cr.consulClient.KeyExists(qname) {
-		//if bytes.Equal(domainEnabled, []byte("true")) {
 		content := fmt.Sprintf("%s hostmaster.%s 0 1800 600 3600 300", qname, qname)
-		return []*result{&result{defaultScopebits, defaultAuth, qname, "IN", "SOA", defaultTTL, hash(qname), content}}
+		results = append(results, &result{qname, "IN", "SOA", defaultTTL, hash(qname), content})
 	}
-	return nil
+	return
 }
 
-func (cr *consulResolver) fetchNSResults(qname string) []*result {
+func (cr *consulResolver) fetchNSResults(qname string) (results []*result) {
 	keys := cr.consulClient.GetChildKeys(qname + "/NS/")
-	results := []*result{}
 	for _, key := range keys {
-		results = append(results, &result{defaultScopebits, defaultAuth, qname, "IN", "NS", defaultTTL, hash(qname), key})
+		results = append(results, &result{qname, "IN", "NS", defaultTTL, hash(qname), key})
 	}
-	return results
+	return
+}
+
+func (cr *consulResolver) fetchAResults(qname string) (results []*result) {
+	kvPairs := cr.consulClient.GetChildKeyValues(qname + "/A/")
+	for key, value := range kvPairs {
+		results = append(results, &result{key, "IN", "A", defaultTTL, hash(qname), value})
+	}
+	return
 }
 
 func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {
@@ -154,13 +154,13 @@ func (pd *pdns) parseQuestion(line []byte) (*question, error) {
 	tag := string(fields[0])
 	switch tag {
 	case TAG_Q:
-		if len(fields) < 8 {
+		if len(fields) < 6 {
 			return nil, errBadLine
 		}
-		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5]), localIp: string(fields[6]), subnet: string(fields[7])}, nil
+		return &question{tag: tag, qname: string(fields[1]), qclass: string(fields[2]), qtype: string(fields[3]), id: string(fields[4]), remoteIp: string(fields[5])}, nil
 
 	case TAG_AXFR:
-		return &question{tag: tag, qname: string(fields[2]), qtype: tag}, nil
+		return &question{tag: tag}, nil
 
 	case TAG_PING:
 		return &question{tag: tag}, nil
@@ -196,8 +196,8 @@ func (pd *pdns) Process() {
 
 		log.Infof("INPUT: %s", line)
 		if needHandshake {
-			if !bytes.Equal(line, GREETING_ABI_V4) {
-				log.Errorf("Handshake failed: %s != %s", line, GREETING_ABI_V4)
+			if !bytes.Equal(line, GREETING_ABI_V1) {
+				log.Errorf("Handshake failed: %s != %s", line, GREETING_ABI_V1)
 				pd.write(FAIL_REPLY)
 			} else {
 				needHandshake = false

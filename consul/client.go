@@ -1,8 +1,9 @@
 package consul
 
 import (
-	"errors"
 	"github.com/armon/consul-api"
+	//log "github.com/golang/glog"
+	"fmt"
 	"strings"
 )
 
@@ -25,17 +26,16 @@ func NewConsulClient(address, prefix string) (*Client, error) {
 	}, nil
 }
 
-func (client *Client) GetValue(key string) ([]byte, error) {
-	var value []byte
+func (client *Client) GetValue(key string) (value string) {
 	kvPair, _, err := client.kv.Get(client.prefix+key, nil)
 	if err != nil {
-		return value, err
+		return
 	}
 	if kvPair == nil {
-		return value, errors.New("No kvPair found")
+		return
 	}
-	value = kvPair.Value
-	return value, nil
+	value = fmt.Sprintf("%s", kvPair.Value)
+	return
 }
 
 func (client *Client) GetKeys(path string) []string {
@@ -45,7 +45,6 @@ func (client *Client) GetKeys(path string) []string {
 
 func (client *Client) GetChildKeys(path string) (childKeys []string) {
 	keys := client.GetKeys(path)
-	//var childKeys []string
 	for i, _ := range keys {
 		keys[i] = strings.TrimPrefix(keys[i], client.prefix+path)
 		keys[i] = strings.TrimSuffix(keys[i], "/")
@@ -59,4 +58,13 @@ func (client *Client) GetChildKeys(path string) (childKeys []string) {
 func (client *Client) KeyExists(key string) bool {
 	keys, _, _ := client.kv.Keys(client.prefix+key, "/", nil)
 	return len(keys) > 0
+}
+
+func (client *Client) GetChildKeyValues(path string) (results map[string]string) {
+	results = make(map[string]string)
+	keys := client.GetChildKeys(path)
+	for _, key := range keys {
+		results[key] = client.GetValue(path + key)
+	}
+	return
 }

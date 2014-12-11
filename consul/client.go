@@ -43,9 +43,9 @@ func (client *Client) GetKeys(path string) []string {
 	return keys
 }
 
-func (client *Client) GetChildKeys(path string) []string {
+func (client *Client) GetChildKeys(path string) (childKeys []string) {
 	keys := client.GetKeys(path)
-	var childKeys []string
+	//var childKeys []string
 	for i, _ := range keys {
 		keys[i] = strings.TrimPrefix(keys[i], client.prefix+path)
 		keys[i] = strings.TrimSuffix(keys[i], "/")
@@ -53,7 +53,7 @@ func (client *Client) GetChildKeys(path string) []string {
 			childKeys = append(childKeys, keys[i])
 		}
 	}
-	return childKeys
+	return
 }
 
 func (client *Client) KeyExists(key string) bool {

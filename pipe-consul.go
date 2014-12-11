@@ -97,7 +97,7 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 		case "ANY":
 			return cr.fetchAllResults(qname), nil
 		case "AXFR":
-			return cr.fetchAllResults(qname), nil
+			//return cr.fetchAllResults(qname), nil
 		case "SOA":
 			return cr.fetchSOAResults(qname), nil
 		case "CNAME":

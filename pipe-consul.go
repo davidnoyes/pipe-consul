@@ -22,7 +22,7 @@ const (
 	TAG_Q            = "Q"
 	defaultScopebits = "0"
 	defaultAuth      = "1"
-	defaultTTL       = "1"
+	defaultTTL       = "500" //5 mins
 	defaultId        = "2"
 	defaultPriority  = 0
 	defaultWeight    = 0
@@ -87,16 +87,17 @@ func hash(s string) string {
 	return fmt.Sprintf("%d", h.Sum32())
 }
 
-func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
+func (cr *consulResolver) fetchResults(qname, qtype, domainID string) ([]*result, error) {
 	if qname != "" && qtype != "" {
 		switch qtype {
 		case "ANY":
-			return cr.fetchAllResults(qname), nil
+			return cr.fetchAllResults(qname, domainID), nil
 		case "SOA":
 			return cr.fetchSOAResults(qname), nil
 		case "CNAME":
+			return cr.fetchCNAMEResults(qname, domainID), nil
 		case "A":
-			return cr.fetchAResults(qname), nil
+			return cr.fetchAResults(qname, domainID), nil
 		case "NS":
 			return cr.fetchNSResults(qname), nil
 		case "SRV":
@@ -106,10 +107,11 @@ func (cr *consulResolver) fetchResults(qname, qtype string) ([]*result, error) {
 	return nil, nil
 }
 
-func (cr *consulResolver) fetchAllResults(qname string) (results []*result) {
+func (cr *consulResolver) fetchAllResults(qname, domainID string) (results []*result) {
 	results = append(results, cr.fetchSOAResults(qname)...)
 	results = append(results, cr.fetchNSResults(qname)...)
-	results = append(results, cr.fetchAResults(qname)...)
+	results = append(results, cr.fetchAResults(qname, domainID)...)
+	results = append(results, cr.fetchCNAMEResults(qname, domainID)...)
 	return
 }
 
@@ -129,16 +131,37 @@ func (cr *consulResolver) fetchNSResults(qname string) (results []*result) {
 	return
 }
 
-func (cr *consulResolver) fetchAResults(qname string) (results []*result) {
-	kvPairs := cr.consulClient.GetChildKeyValues(qname + "/A/")
-	for key, value := range kvPairs {
-		results = append(results, &result{key, "IN", "A", defaultTTL, hash(qname), value})
+func (cr *consulResolver) fetchAResults(qname, domainID string) (results []*result) {
+	domains := cr.consulClient.GetChildKeys("")
+	for _, domain := range domains {
+		if hash(domain) == domainID {
+			value := cr.consulClient.GetValue(domain + "/A/" + qname)
+			if value != "" {
+				results = append(results, &result{qname, "IN", "A", defaultTTL, hash(domain), value})
+			}
+			return
+		}
 	}
+
 	return
 }
 
+func (cr *consulResolver) fetchCNAMEResults(qname, domainID string) (results []*result) {
+	domains := cr.consulClient.GetChildKeys("")
+	for _, domain := range domains {
+		if hash(domain) == domainID {
+			value := cr.consulClient.GetValue(domain + "/CNAME/" + qname)
+			if value != "" {
+				results = append(results, &result{qname, "IN", "CNAME", defaultTTL, hash(domain), value})
+			}
+			return
+		}
+	}
+
+	return
+}
 func (pd *pdns) answerQuestion(question *question) (answers []string, err error) {
-	results, err := pd.cr.fetchResults(question.qname, question.qtype)
+	results, err := pd.cr.fetchResults(question.qname, question.qtype, question.id)
 	if err != nil {
 		pd.write(fmt.Sprintf("Query error %s %s: %s", question.qname, question.qtype, err))
 		return nil, err

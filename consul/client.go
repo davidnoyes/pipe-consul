@@ -1,9 +1,9 @@
 package consul
 
 import (
+	"fmt"
 	"github.com/armon/consul-api"
 	//log "github.com/golang/glog"
-	"fmt"
 	"strings"
 )
 

@@ -1,11 +1,12 @@
 package main
 
 import (
-	"./consulResolver"
-	"./pdns"
 	"flag"
-	log "github.com/golang/glog"
 	"os"
+
+	log "github.com/golang/glog"
+	consulResolver "github.com/raspberrypython/consulResolver"
+	pdns "github.com/raspberrypython/pdns"
 )
 
 const (
